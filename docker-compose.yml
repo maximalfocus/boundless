@@ -1,0 +1,63 @@
+name: boundless
+
+services:
+  # The secure application is the default long-running service, on loopback only.
+  secure:
+    build: .
+    image: boundless:local
+    init: true
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    # The disposable fixture tree is the only writable location. tmpfs must be
+    # world-writable (mode 1777) so the non-root user can recreate it on every start.
+    volumes:
+      - type: tmpfs
+        target: /data
+        tmpfs:
+          mode: 01777
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          mode: 01777
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import sys, urllib.request;
+          sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz').status == 200 else 1)
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 2s
+
+  # One-shot walkthrough runner: waits for the secure app, exercises it over real HTTP,
+  # prints a report, exits non-zero on any failed check.  `docker compose run --rm demo`
+  demo:
+    image: boundless:local
+    build: .
+    depends_on:
+      secure:
+        condition: service_healthy
+    command: ["python", "-m", "boundless.cli", "--base-url", "http://secure:8000"]
+    profiles: ["demo"]
+
+  # Lint, type-check, and test through the same image. Mounts the working tree so it
+  # verifies current source without a rebuild; CI runs the identical command.
+  verify:
+    image: boundless:local
+    build: .
+    working_dir: /work
+    volumes:
+      - .:/work
+    environment:
+      PYTHONPATH: /work/src
+      RUFF_CACHE_DIR: /tmp/ruff
+      MYPY_CACHE_DIR: /tmp/mypy
+      BOUNDLESS_DATA_ROOT: /tmp/data
+    command: ["sh", "scripts/verify.sh"]
+    profiles: ["verify"]

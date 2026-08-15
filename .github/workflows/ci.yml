@@ -1,0 +1,25 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the demo image
+        run: docker compose build
+
+      - name: Lint, type-check, and test (the same Compose verification boundary)
+        run: docker compose run --rm verify
+
+      - name: Run the one-shot secure demo over real HTTP
+        run: docker compose run --rm demo
+
+      - name: Tear down
+        if: always()
+        run: docker compose down --volumes --remove-orphans
