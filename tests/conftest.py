@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from boundless.config import Settings
 from boundless.secure.app import create_secure_app
+from boundless.vulnerable.app import create_vulnerable_app
 
 
 @pytest.fixture
@@ -20,7 +21,24 @@ def settings(tmp_path: Path) -> Settings:
 
 @pytest.fixture
 def client(settings: Settings) -> Iterator[TestClient]:
-    """A TestClient whose lifespan builds fresh fixtures under the temp data root."""
+    """A secure TestClient whose lifespan builds fresh fixtures under the temp data root."""
     app = create_secure_app(settings)
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def vulnerable_client(settings: Settings) -> Iterator[TestClient]:
+    """A vulnerable TestClient (explicitly acknowledged), same fixtures."""
+    app = create_vulnerable_app(settings, acknowledged=True)
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def both_clients(settings: Settings) -> Iterator[tuple[TestClient, TestClient]]:
+    """Secure and vulnerable clients bound to the same deterministic data root."""
+    secure_app = create_secure_app(settings)
+    vulnerable_app = create_vulnerable_app(settings, acknowledged=True)
+    with TestClient(secure_app) as secure, TestClient(vulnerable_app) as vulnerable:
+        yield secure, vulnerable

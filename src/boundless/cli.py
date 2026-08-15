@@ -1,12 +1,14 @@
-"""Command-line demo runner for the secure baseline.
+"""Command-line demo runner.
 
-Usage (inside the Compose network)::
+Two subcommands, both driven over real HTTP:
 
-    python -m boundless.cli --base-url http://secure:8000
+- ``demo`` exercises the secure baseline (secure + legitimate behaviour).
+- ``compare`` runs the traversal ladder against the vulnerable and secure apps side by
+  side, printing the contrast.
 
-It waits for the target to become healthy, runs the secure + legitimate walkthrough over
-real HTTP, prints a readable report, and exits non-zero if any step failed. Later slices
-extend this into the full vulnerable/secure comparison; here it exercises the secure app.
+Each waits for its target(s) to become healthy, prints a readable report, and exits
+non-zero if any check failed. The scenario/comparison engines are pure functions over
+``httpx`` clients, so tests drive them exactly as the CLI does.
 """
 
 from __future__ import annotations
@@ -18,7 +20,10 @@ from collections.abc import Sequence
 
 import httpx
 
-from .scenario import Check, all_passed, run_secure_baseline
+from .comparison import Row, run_comparison
+from .comparison import all_passed as comparison_passed
+from .scenario import Check, run_secure_baseline
+from .scenario import all_passed as scenario_passed
 
 
 def _wait_for_health(base_url: str, timeout: float) -> bool:
@@ -34,7 +39,7 @@ def _wait_for_health(base_url: str, timeout: float) -> bool:
     return False
 
 
-def _print_report(checks: list[Check]) -> None:
+def _print_checks(checks: list[Check]) -> None:
     group_titles = {
         "legitimate": "Legitimate behaviour (authenticated, benign)",
         "secure-read": "Secure retrieval — every unsafe name is an indistinguishable 404",
@@ -53,29 +58,81 @@ def _print_report(checks: list[Check]) -> None:
         print(f"         observed  : {check.observed}")
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Entry point; returns a process exit code."""
-    parser = argparse.ArgumentParser(description="boundless secure-baseline demo runner")
-    parser.add_argument("--base-url", default="http://secure:8000")
-    parser.add_argument("--health-timeout", type=float, default=30.0)
-    args = parser.parse_args(argv)
+def _print_rows(rows: list[Row]) -> None:
+    group_titles = {
+        "traversal": "Traversal ladder — vulnerable crosses, secure refuses",
+        "parity": "Legitimate parity — both apps agree",
+    }
+    current = ""
+    for row in rows:
+        if row.group != current:
+            current = row.group
+            print(f"\n== {group_titles.get(current, current)} ==")
+        mark = "PASS" if row.passed else "FAIL"
+        print(f"  [{mark}] {row.name}")
+        print(f"         submitted  : {row.submitted}")
+        print(f"         secure     : {row.secure_observed}")
+        print(f"         vulnerable : {row.vulnerable_observed}")
+        print(f"         verdict    : {row.verdict}")
 
+
+def _run_demo(args: argparse.Namespace) -> int:
     print(f"boundless demo — target {args.base_url}")
     if not _wait_for_health(args.base_url, args.health_timeout):
         print(f"error: {args.base_url} did not become healthy in time", file=sys.stderr)
         return 2
-
     with httpx.Client(base_url=args.base_url, timeout=10.0) as client:
         checks = run_secure_baseline(client)
-
-    _print_report(checks)
+    _print_checks(checks)
     passed = sum(1 for c in checks if c.passed)
     print(f"\n{passed}/{len(checks)} checks passed")
-    if all_passed(checks):
+    if scenario_passed(checks):
         print("RESULT: secure baseline behaves as specified.")
         return 0
     print("RESULT: one or more checks FAILED.", file=sys.stderr)
     return 1
+
+
+def _run_compare(args: argparse.Namespace) -> int:
+    print(f"boundless compare — secure {args.secure_url} vs vulnerable {args.vulnerable_url}")
+    for url in (args.secure_url, args.vulnerable_url):
+        if not _wait_for_health(url, args.health_timeout):
+            print(f"error: {url} did not become healthy in time", file=sys.stderr)
+            return 2
+    with (
+        httpx.Client(base_url=args.secure_url, timeout=10.0) as secure,
+        httpx.Client(base_url=args.vulnerable_url, timeout=10.0) as vulnerable,
+    ):
+        rows = run_comparison(secure, vulnerable)
+    _print_rows(rows)
+    passed = sum(1 for r in rows if r.passed)
+    print(f"\n{passed}/{len(rows)} rows passed")
+    if comparison_passed(rows):
+        print("RESULT: vulnerable app crosses the boundary; secure app refuses; parity holds.")
+        return 0
+    print("RESULT: one or more comparison rows FAILED.", file=sys.stderr)
+    return 1
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Entry point; returns a process exit code."""
+    parser = argparse.ArgumentParser(description="boundless demo runner")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    demo = sub.add_parser("demo", help="exercise the secure baseline")
+    demo.add_argument("--base-url", default="http://secure:8000")
+    demo.add_argument("--health-timeout", type=float, default=30.0)
+    demo.set_defaults(func=_run_demo)
+
+    compare = sub.add_parser("compare", help="vulnerable vs secure read comparison")
+    compare.add_argument("--secure-url", default="http://secure:8000")
+    compare.add_argument("--vulnerable-url", default="http://vulnerable:8001")
+    compare.add_argument("--health-timeout", type=float, default=30.0)
+    compare.set_defaults(func=_run_compare)
+
+    args = parser.parse_args(argv)
+    result: int = args.func(args)
+    return result
 
 
 if __name__ == "__main__":
