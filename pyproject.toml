@@ -4,8 +4,19 @@ version = "0.1.0"
 description = "A container-only path-traversal (CWE-22 / Zip Slip) teaching demo: join-versus-resolve, done safely."
 readme = "README.md"
 requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "boundless demo authors" }]
 keywords = ["security", "education", "path-traversal", "cwe-22", "zip-slip"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Education",
+    "Topic :: Security",
+    "Private :: Do Not Upload",
+]
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
