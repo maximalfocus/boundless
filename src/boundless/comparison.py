@@ -14,8 +14,10 @@ import httpx
 
 from .fixtures import DEMO_SENTINEL
 from .identity import USERS_BY_ID
+from .samples import ATTACKER_FOOTER, zip_slip_write_archive
 
 ATTACKER = USERS_BY_ID["uma-aurora"]
+VICTIM = USERS_BY_ID["nils-northwind"]
 SENTINEL_VALUE = DEMO_SENTINEL.split("=", 1)[1]
 
 
@@ -138,6 +140,96 @@ def _parity_rows(secure: httpx.Client, vulnerable: httpx.Client) -> list[Row]:
             vulnerable_observed=f"{v_sum.status_code}",
             verdict="both apps return identical summary",
             passed=same_sum,
+        )
+    )
+    return rows
+
+
+def _victim_auth() -> dict[str, str]:
+    return {"Authorization": f"Bearer {VICTIM.token}"}
+
+
+def _summary_footer(client: httpx.Client, headers: dict[str, str]) -> str:
+    response = client.get("/statements/summary", headers=headers)
+    return response.json().get("footer", "") if response.status_code == 200 else ""
+
+
+def _read_text(client: httpx.Client, headers: dict[str, str], name: str) -> str:
+    response = client.get(f"/documents?name={name}", headers=headers)
+    return response.text if response.status_code == 200 else ""
+
+
+def run_write_demo(secure: httpx.Client, vulnerable: httpx.Client) -> list[Row]:
+    """Zip-Slip write escape, observed through the normal boundary, both apps.
+
+    Requires the two apps to have independent state (as they do as separate containers);
+    tests pass isolated clients. The write escape overwrites the branding config (seen via
+    a later legitimate summary) and one other tenant's statement (seen via that tenant's
+    own read); the secure app rejects the identical archive whole and stays intact.
+    """
+    rows: list[Row] = []
+    footer_before = _summary_footer(vulnerable, _auth())
+    victim_before = _read_text(vulnerable, _victim_auth(), "statement-2026-07.txt")
+
+    imported = vulnerable.post(
+        "/documents/import",
+        headers=_auth(),
+        files={"file": ("slip.zip", zip_slip_write_archive(), "application/zip")},
+    )
+    count = len(imported.json().get("imported", [])) if imported.status_code == 200 else 0
+    rows.append(
+        Row(
+            group="write",
+            name="vulnerable Zip-Slip import",
+            submitted="../../config/branding.conf + ../northwind-mills/statement-2026-07.txt",
+            secure_observed="n/a",
+            vulnerable_observed=f"{imported.status_code} wrote {count} entries outside the dir",
+            verdict="entries written outside the extraction directory",
+            passed=imported.status_code == 200 and count == 2,
+        )
+    )
+
+    footer_after = _summary_footer(vulnerable, _auth())
+    rows.append(
+        Row(
+            group="write",
+            name="branding footer tampered (via legitimate summary)",
+            submitted="GET /statements/summary",
+            secure_observed="footer unchanged",
+            vulnerable_observed=f"before={footer_before!r} after={footer_after!r}",
+            verdict="the overwrite returns through a later legitimate request",
+            passed=ATTACKER_FOOTER in footer_after and ATTACKER_FOOTER not in footer_before,
+        )
+    )
+
+    victim_after = _read_text(vulnerable, _victim_auth(), "statement-2026-07.txt")
+    rows.append(
+        Row(
+            group="write",
+            name="cross-tenant document overwritten",
+            submitted="northwind-mills reads its own statement-2026-07.txt",
+            secure_observed="untouched",
+            vulnerable_observed=f"changed={victim_before != victim_after}",
+            verdict="another tenant's document was overwritten",
+            passed=victim_before != victim_after and "OVERWRITTEN" in victim_after,
+        )
+    )
+
+    secure_import = secure.post(
+        "/documents/import",
+        headers=_auth(),
+        files={"file": ("slip.zip", zip_slip_write_archive(), "application/zip")},
+    )
+    secure_footer = _summary_footer(secure, _auth())
+    rows.append(
+        Row(
+            group="write",
+            name="secure rejects the same archive",
+            submitted="POST /documents/import (same Zip-Slip archive)",
+            secure_observed=f"{secure_import.status_code} (rejected whole)",
+            vulnerable_observed="200 (wrote the entries)",
+            verdict="secure: all-or-nothing 400, nothing written, footer intact",
+            passed=secure_import.status_code == 400 and ATTACKER_FOOTER not in secure_footer,
         )
     )
     return rows

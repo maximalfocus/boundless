@@ -16,14 +16,16 @@ explicitly acknowledged running deliberately insecure code.
 
 from __future__ import annotations
 
+import io
 import os
 import urllib.parse
+import zipfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 
 from ..config import Settings, load_settings
@@ -61,6 +63,34 @@ def _open_by_join(base: Path, name: str) -> tuple[bytes, str]:
     """
     joined = os.path.join(str(base), name)  # the vulnerable join: no resolution, no check
     return Path(joined).read_bytes(), joined
+
+
+def _extract_by_join(base: Path, raw: bytes) -> list[str]:
+    """Hand-rolled per-entry extraction — the Zip-Slip primitive.
+
+    Each entry name is joined to the destination and written with no resolution and no
+    confinement, so a ``../`` entry escapes the extraction directory. Python's high-level
+    ``ZipFile.extractall`` already sanitizes member names; this hand-rolled loop is the
+    realistic vulnerable pattern that skips it.
+
+    Writes are confined to the disposable in-container fixture tree only because the
+    container's root filesystem is read-only and the tmpfs tree is the sole writable mount
+    (a write to an execution-reaching path fails and raises); the demo ships archives that
+    target only the two documented fixture paths.
+    """
+    written: list[str] = []
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            target = os.path.join(str(base), info.filename)  # no confinement — the flaw
+            parent = os.path.dirname(target)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(target, "wb") as handle:
+                handle.write(archive.read(info))
+            written.append(info.filename)
+    return written
 
 
 def create_vulnerable_app(
@@ -123,6 +153,23 @@ def create_vulnerable_app(
             content=data,
             headers={"X-Boundless-Opened": joined, "X-Boundless-Sanitized": sanitized},
         )
+
+    @app.post("/documents/import")
+    async def import_archive(
+        request: Request,
+        file: Annotated[UploadFile, File()],
+        user: Annotated[User, Depends(require_user)],
+    ) -> dict[str, list[str]]:
+        """Zip-Slip import — a hand-rolled write loop with no per-entry confinement."""
+        base = app_state(request).settings.tenant_base(user.tenant_id)
+        raw = await file.read()
+        try:
+            written = _extract_by_join(base, raw)
+        except (zipfile.BadZipFile, OSError):
+            # A malformed archive, or a write blocked by the read-only root filesystem
+            # (e.g. an entry aimed outside the writable fixture tree).
+            raise HTTPException(status_code=400, detail="Bad Request") from None
+        return {"imported": written}
 
     @app.get("/statements/summary")
     def statements_summary(

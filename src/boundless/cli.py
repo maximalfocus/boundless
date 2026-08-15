@@ -20,7 +20,7 @@ from collections.abc import Sequence
 
 import httpx
 
-from .comparison import Row, run_comparison
+from .comparison import Row, run_comparison, run_write_demo
 from .comparison import all_passed as comparison_passed
 from .scenario import Check, run_secure_baseline
 from .scenario import all_passed as scenario_passed
@@ -62,6 +62,7 @@ def _print_rows(rows: list[Row]) -> None:
     group_titles = {
         "traversal": "Traversal ladder — vulnerable crosses, secure refuses",
         "parity": "Legitimate parity — both apps agree",
+        "write": "Write escape (Zip Slip) — observed through the normal boundary",
     }
     current = ""
     for row in rows:
@@ -103,12 +104,14 @@ def _run_compare(args: argparse.Namespace) -> int:
         httpx.Client(base_url=args.secure_url, timeout=10.0) as secure,
         httpx.Client(base_url=args.vulnerable_url, timeout=10.0) as vulnerable,
     ):
+        # Read ladder + parity first (read-only), then the write escape (mutates state).
         rows = run_comparison(secure, vulnerable)
+        rows += run_write_demo(secure, vulnerable)
     _print_rows(rows)
     passed = sum(1 for r in rows if r.passed)
     print(f"\n{passed}/{len(rows)} rows passed")
     if comparison_passed(rows):
-        print("RESULT: vulnerable app crosses the boundary; secure app refuses; parity holds.")
+        print("RESULT: vulnerable app crosses the read+write boundary; secure app refuses.")
         return 0
     print("RESULT: one or more comparison rows FAILED.", file=sys.stderr)
     return 1
