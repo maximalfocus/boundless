@@ -198,6 +198,13 @@ primitive could target execution-reaching paths (an interpreter import path, a s
 script, a shell profile, a credential store) in a real system — this demonstration
 deliberately does not, and its read-only container root filesystem would refuse it.
 
+To keep the teaching artifact non-weaponizable, the vulnerable import has an outer,
+demo-only safety rail: ordinary members may land inside the caller's tenant directory, and
+the two documented traversal members may land on the two fixture targets above; every other
+resolved destination is rejected before any member is written. This is **not** the product
+fix—the two intended members still escape the tenant directory. The secure app instead
+applies the real rule uniformly: resolve every candidate and confine it to the tenant base.
+
 ## Expected outcomes
 
 - The legitimate reads, import, and summary succeed and return only the caller's own data.

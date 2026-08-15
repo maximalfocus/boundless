@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import io
+import zipfile
+from pathlib import Path
+
 import httpx
 from fastapi.testclient import TestClient
 
@@ -25,6 +29,14 @@ def _import_slip(client: TestClient, user_id: str) -> httpx.Response:
         files={"file": ("slip.zip", zip_slip_write_archive(), "application/zip")},
     )
     return response
+
+
+def _archive_of(entries: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, body in entries.items():
+            archive.writestr(name, body)
+    return buffer.getvalue()
 
 
 def test_only_the_two_documented_targets_change(
@@ -66,3 +78,28 @@ def test_secure_rejects_the_same_archive_whole(settings: Settings) -> None:
         response = _import_slip(secure, "uma-aurora")
         assert response.status_code == 400
         assert snapshot_tree(settings.data_root) == before
+
+
+def test_demo_safety_rail_refuses_out_of_fixture_write_before_any_member(
+    vulnerable_client: TestClient, settings: Settings, tmp_path: Path
+) -> None:
+    before = snapshot_tree(settings.data_root)
+    footer_before = branding_footer(settings)
+    outside_probe = tmp_path / "outside-fixture-probe.txt"
+    archive = _archive_of(
+        {
+            "../../config/branding.conf": b"[branding]\nfooter = should-not-land\n",
+            str(outside_probe): b"must not be written",
+        }
+    )
+
+    response = vulnerable_client.post(
+        "/documents/import",
+        headers=auth("uma-aurora"),
+        files={"file": ("unsafe.zip", archive, "application/zip")},
+    )
+
+    assert response.status_code == 400
+    assert not outside_probe.exists()
+    assert branding_footer(settings) == footer_before
+    assert snapshot_tree(settings.data_root) == before
