@@ -12,9 +12,11 @@ archive. It is built for a mixed technical audience and runs entirely inside Doc
 > outside its own container except that container's own `/etc/passwd`, and writes only
 > inside a disposable in-container fixture tree.
 
-The demo now includes the deliberately *vulnerable* **read** contrast (the naive join and
-the broken sanitizer), shown side by side with the secure app. The vulnerable app is
-**opt-in** and hardened. The Zip-Slip **write** contrast arrives in a later milestone.
+The demo shows the deliberately *vulnerable* contrast in **both directions** — **read**
+(the naive join and the broken sanitizer) and **write** (Zip-Slip archive extraction) —
+side by side with the secure app. The vulnerable app is **opt-in** and hardened, and every
+write it performs is confined to two documented targets inside a disposable in-container
+fixture tree.
 
 ## The one idea
 
@@ -173,6 +175,36 @@ exploration the vulnerable API is available on `127.0.0.1:8001`:
 ALLOW_VULNERABLE_DEMO=true docker compose --profile vulnerable up vulnerable
 ```
 
+### The write escape (Zip Slip)
+
+The same `compare` run then demonstrates the **write** direction. The vulnerable import is a
+hand-rolled per-entry write loop that joins each archive entry name to the destination and
+writes it, with no confinement (Python's `zipfile.extractall` already sanitizes member
+names — the hand-rolled loop is the realistic vulnerable pattern). Importing an archive
+whose entries are `../../config/branding.conf` and `../northwind-mills/statement-2026-07.txt`
+writes **outside** the caller's directory:
+
+- the branding configuration is overwritten, so a subsequent **legitimate**
+  `GET /statements/summary` returns the attacker's footer text — the tamper is observable
+  through the normal boundary; and
+- another tenant's statement document is overwritten, visible when that tenant reads its own
+  statement.
+
+The secure app rejects the identical archive **as a whole** with a generic `400`, writing no
+entry. Every write the demonstration performs lands only on those **two documented targets**
+inside the disposable in-container fixture tree, which is recreated from scratch on every
+run; verification asserts everything else is byte-for-byte unchanged. The same write
+primitive could target execution-reaching paths (an interpreter import path, a startup
+script, a shell profile, a credential store) in a real system — this demonstration
+deliberately does not, and its read-only container root filesystem would refuse it.
+
+To keep the teaching artifact non-weaponizable, the vulnerable import has an outer,
+demo-only safety rail: ordinary members may land inside the caller's tenant directory, and
+the two documented traversal members may land on the two fixture targets above; every other
+resolved destination is rejected before any member is written. This is **not** the product
+fix—the two intended members still escape the tenant directory. The secure app instead
+applies the real rule uniformly: resolve every candidate and confine it to the tenant base.
+
 ## Expected outcomes
 
 - The legitimate reads, import, and summary succeed and return only the caller's own data.
@@ -194,11 +226,14 @@ tests/           Dockerfile      docker-compose.yml            .github/workflows
 
 ## Safety boundary
 
-The demonstration is wholly synthetic and local. It executes **no command**. The
-vulnerable app introduced here is **read-only** in effect — it discloses files but writes,
-deletes, and mutates nothing — and starting it requires two deliberate actions. Its
-container is hardened (non-root, all capabilities dropped, `no-new-privileges`, read-only
-root filesystem) with **no network egress** beyond its loopback port. The Zip-Slip
-**write** contrast arrives in a later milestone; every write it performs will be confined
-to two documented targets inside the disposable in-container fixture tree, and
-execution-reaching write targets are out of scope by design.
+The demonstration is wholly synthetic and local. It executes **no command**. Starting the
+vulnerable app requires two deliberate actions, and its container is hardened (non-root, all
+capabilities dropped, `no-new-privileges`, read-only root filesystem) with **no network
+egress** beyond its loopback port. Every write the demonstration performs is confined to
+**two documented targets** — the branding config and one other tenant's statement — inside a
+disposable in-container fixture tree recreated on every run; it performs no delete and no
+truncation outside those two targets, touches nothing on the host, and verification asserts
+everything else is byte-for-byte unchanged. It writes to **no execution-reaching path**
+(interpreter import path, startup script, scheduled-job directory, shell profile, credential
+store, container-runtime path): the same primitive could in a real system, and this demo
+deliberately does not. Do not deploy it.

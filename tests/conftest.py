@@ -37,8 +37,26 @@ def vulnerable_client(settings: Settings) -> Iterator[TestClient]:
 
 @pytest.fixture
 def both_clients(settings: Settings) -> Iterator[tuple[TestClient, TestClient]]:
-    """Secure and vulnerable clients bound to the same deterministic data root."""
+    """Secure and vulnerable clients bound to the same deterministic data root.
+
+    Suitable for read-only comparisons where shared, identical fixtures are convenient.
+    """
     secure_app = create_secure_app(settings)
     vulnerable_app = create_vulnerable_app(settings, acknowledged=True)
+    with TestClient(secure_app) as secure, TestClient(vulnerable_app) as vulnerable:
+        yield secure, vulnerable
+
+
+@pytest.fixture
+def isolated_clients(tmp_path: Path) -> Iterator[tuple[TestClient, TestClient]]:
+    """Secure and vulnerable clients with SEPARATE data roots, as in real deployment.
+
+    Required for write demonstrations, where the vulnerable app must not mutate the
+    secure app's fixture tree.
+    """
+    secure_app = create_secure_app(Settings(data_root=tmp_path / "secure-data"))
+    vulnerable_app = create_vulnerable_app(
+        Settings(data_root=tmp_path / "vulnerable-data"), acknowledged=True
+    )
     with TestClient(secure_app) as secure, TestClient(vulnerable_app) as vulnerable:
         yield secure, vulnerable

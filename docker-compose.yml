@@ -16,10 +16,6 @@ services:
         target: /data
         tmpfs:
           mode: 01777
-      - type: tmpfs
-        target: /tmp
-        tmpfs:
-          mode: 01777
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
@@ -52,10 +48,6 @@ services:
     volumes:
       - type: tmpfs
         target: /data
-        tmpfs:
-          mode: 01777
-      - type: tmpfs
-        target: /tmp
         tmpfs:
           mode: 01777
     networks:
@@ -93,7 +85,7 @@ services:
     command: ["python", "-m", "boundless.cli", "demo", "--base-url", "http://secure:8000"]
     profiles: ["demo"]
 
-  # One-shot vulnerable-vs-secure read comparison. Requires the two opt-in actions:
+  # One-shot vulnerable-vs-secure read/write comparison. Requires the two opt-in actions:
   #   ALLOW_VULNERABLE_DEMO=true docker compose --profile vulnerable run --rm compare
   compare:
     image: boundless:local

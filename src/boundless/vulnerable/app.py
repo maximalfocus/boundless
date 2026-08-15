@@ -16,14 +16,16 @@ explicitly acknowledged running deliberately insecure code.
 
 from __future__ import annotations
 
+import io
 import os
 import urllib.parse
+import zipfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 
 from ..config import Settings, load_settings
@@ -61,6 +63,68 @@ def _open_by_join(base: Path, name: str) -> tuple[bytes, str]:
     """
     joined = os.path.join(str(base), name)  # the vulnerable join: no resolution, no check
     return Path(joined).read_bytes(), joined
+
+
+class DemoWriteBoundaryError(ValueError):
+    """An archive member would leave the demo's enumerated write boundary."""
+
+
+def _is_permitted_demo_write(base: Path, target: Path) -> bool:
+    """Keep the unsafe join demonstrable without exposing arbitrary file writes.
+
+    Regular imports may stay inside the caller's tenant directory. The deliberately
+    traversing demonstration may additionally land on exactly two enumerated fixture
+    files. This outer safety rail is not the product fix: it intentionally permits those
+    two escapes, while the secure app confines every member to the tenant base.
+    """
+    resolved_base = base.resolve()
+    data_root = resolved_base.parent.parent
+    documented_escape_targets = {
+        (data_root / "config" / "branding.conf").resolve(),
+        (data_root / "archive" / "northwind-mills" / "statement-2026-07.txt").resolve(),
+    }
+    resolved_target = target.resolve()
+    return (
+        resolved_target.is_relative_to(resolved_base)
+        or resolved_target in documented_escape_targets
+    )
+
+
+def _extract_by_join(base: Path, raw: bytes) -> list[str]:
+    """Hand-rolled per-entry extraction — the Zip-Slip primitive.
+
+    Each entry name is joined to the destination and written with no resolution and no
+    confinement, so a ``../`` entry escapes the extraction directory. Python's high-level
+    ``ZipFile.extractall`` already sanitizes member names; this hand-rolled loop is the
+    realistic vulnerable pattern that skips it.
+
+    A separate demo-only safety rail preflights all targets before any write and permits
+    only regular in-tenant imports plus the two documented fixture escapes. It does not
+    make the extraction secure: those two entries still cross the tenant boundary because
+    the joined path is never confined to the tenant base.
+    """
+    members: list[tuple[zipfile.ZipInfo, Path]] = []
+    written: list[str] = []
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            target = Path(os.path.join(str(base), info.filename))  # unsafe join — the flaw
+            try:
+                permitted = _is_permitted_demo_write(base, target)
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise DemoWriteBoundaryError("archive target outside demo write boundary") from exc
+            if not permitted:
+                raise DemoWriteBoundaryError("archive target outside demo write boundary")
+            members.append((info, target))
+
+        # Preflight is complete, so a refused member cannot leave an earlier write behind.
+        for info, target in members:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("wb") as handle:
+                handle.write(archive.read(info))
+            written.append(info.filename)
+    return written
 
 
 def create_vulnerable_app(
@@ -123,6 +187,23 @@ def create_vulnerable_app(
             content=data,
             headers={"X-Boundless-Opened": joined, "X-Boundless-Sanitized": sanitized},
         )
+
+    @app.post("/documents/import")
+    async def import_archive(
+        request: Request,
+        file: Annotated[UploadFile, File()],
+        user: Annotated[User, Depends(require_user)],
+    ) -> dict[str, list[str]]:
+        """Zip-Slip import — a hand-rolled write loop with no per-entry confinement."""
+        base = app_state(request).settings.tenant_base(user.tenant_id)
+        raw = await file.read()
+        try:
+            written = _extract_by_join(base, raw)
+        except (zipfile.BadZipFile, OSError, ValueError):
+            # A malformed archive, a target outside the enumerated demo boundary, or a
+            # write blocked by the read-only root filesystem.
+            raise HTTPException(status_code=400, detail="Bad Request") from None
+        return {"imported": written}
 
     @app.get("/statements/summary")
     def statements_summary(
