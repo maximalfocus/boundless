@@ -20,6 +20,11 @@ jobs:
       - name: Run the one-shot secure demo over real HTTP
         run: docker compose run --rm demo
 
+      - name: Reset to fresh state
+        # The demo's well-formed import mutates the secure container's fixtures; the
+        # comparison needs both apps to start from identical fresh state.
+        run: docker compose down --volumes --remove-orphans
+
       - name: Run the vulnerable-vs-secure read comparison (opt-in)
         run: ALLOW_VULNERABLE_DEMO=true docker compose --profile vulnerable run --rm compare
 
