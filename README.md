@@ -237,3 +237,23 @@ everything else is byte-for-byte unchanged. It writes to **no execution-reaching
 (interpreter import path, startup script, scheduled-job directory, shell profile, credential
 store, container-runtime path): the same primitive could in a real system, and this demo
 deliberately does not. Do not deploy it.
+
+## Not a product
+
+There is **no hosted instance, no published package, and no container image** — this repository is
+the whole artifact, and it runs only on your own machine, in Docker, on loopback ports. Publishing
+the source is not a deployment.
+
+Nothing here makes a **production-readiness, security, support, or compatibility promise**. There
+is no service-level agreement, no guaranteed response time, no support window, and no maintained
+release branch — `main` is the only supported state. Take the *secure* pattern
+([`safepath.confine`](src/boundless/safepath.py)) into your own code if it helps; do not take the
+vulnerable application anywhere.
+
+## Contributing, security, and licence
+
+- **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — the Docker-only workflow, the `verify` gate every change
+  must pass, and the invariants that keep an intentionally vulnerable project safe.
+- **[`SECURITY.md`](SECURITY.md)** — which insecure code here is **intentional** (and therefore not a
+  bug to report), what *would* be a real vulnerability, and how to report one privately.
+- **[`LICENSE`](LICENSE)** — MIT.
