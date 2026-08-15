@@ -35,16 +35,87 @@ services:
       retries: 30
       start_period: 2s
 
-  # One-shot walkthrough runner: waits for the secure app, exercises it over real HTTP,
-  # prints a report, exits non-zero on any failed check.  `docker compose run --rm demo`
+  # The intentionally vulnerable app. Two deliberate actions are required to start it:
+  # the `vulnerable` Compose profile AND ALLOW_VULNERABLE_DEMO=true (the app refuses to
+  # boot without the acknowledgement). It runs hardened with NO network egress — attached
+  # only to a bridge whose IP masquerade is disabled — while still reachable on loopback.
+  vulnerable:
+    build: .
+    image: boundless:local
+    profiles: ["vulnerable"]
+    init: true
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      ALLOW_VULNERABLE_DEMO: ${ALLOW_VULNERABLE_DEMO:-}
+    volumes:
+      - type: tmpfs
+        target: /data
+        tmpfs:
+          mode: 01777
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          mode: 01777
+    networks:
+      - egress_blocked
+    ports:
+      - "127.0.0.1:8001:8001"
+    command:
+      - uvicorn
+      - boundless.vulnerable.app:create_vulnerable_app
+      - --factory
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8001"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import sys, urllib.request;
+          sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/healthz').status == 200 else 1)
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 2s
+
+  # One-shot secure-baseline walkthrough. `docker compose run --rm demo`
   demo:
     image: boundless:local
     build: .
     depends_on:
       secure:
         condition: service_healthy
-    command: ["python", "-m", "boundless.cli", "--base-url", "http://secure:8000"]
+    command: ["python", "-m", "boundless.cli", "demo", "--base-url", "http://secure:8000"]
     profiles: ["demo"]
+
+  # One-shot vulnerable-vs-secure read comparison. Requires the two opt-in actions:
+  #   ALLOW_VULNERABLE_DEMO=true docker compose --profile vulnerable run --rm compare
+  compare:
+    image: boundless:local
+    build: .
+    profiles: ["vulnerable"]
+    depends_on:
+      secure:
+        condition: service_healthy
+      vulnerable:
+        condition: service_healthy
+    networks:
+      - default
+      - egress_blocked
+    command:
+      - python
+      - -m
+      - boundless.cli
+      - compare
+      - --secure-url
+      - http://secure:8000
+      - --vulnerable-url
+      - http://vulnerable:8001
 
   # Lint, type-check, and test through the same image. Mounts the working tree so it
   # verifies current source without a rebuild; CI runs the identical command.
@@ -61,3 +132,11 @@ services:
       BOUNDLESS_DATA_ROOT: /tmp/data
     command: ["sh", "scripts/verify.sh"]
     profiles: ["verify"]
+
+networks:
+  # A bridge with IP masquerade disabled: containers on it cannot egress to the internet
+  # (no SNAT), but their loopback-published ports remain reachable from the host.
+  egress_blocked:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"

@@ -12,9 +12,9 @@ archive. It is built for a mixed technical audience and runs entirely inside Doc
 > outside its own container except that container's own `/etc/passwd`, and writes only
 > inside a disposable in-container fixture tree.
 
-This first milestone ships the **secure baseline** only. The deliberately *vulnerable*
-contrast — the naive join, the broken sanitizer, and the Zip-Slip write — arrives in
-later milestones and is always opt-in.
+The demo now includes the deliberately *vulnerable* **read** contrast (the naive join and
+the broken sanitizer), shown side by side with the secure app. The vulnerable app is
+**opt-in** and hardened. The Zip-Slip **write** contrast arrives in a later milestone.
 
 ## The one idea
 
@@ -38,8 +38,9 @@ endpoint funnels through it.
 1. **Resolve, then confine** — the primary fix, applied to reads *and* to every archive
    entry before a single byte is written. (This milestone.)
 2. **Blocklist filtering of `../` is not a boundary check** — stripping `../` once, or
-   inspecting a string before it is decoded, is defeated by `....//` and `%2e%2e%2f`.
-   (Shown against a deliberately broken "hardened" endpoint in a later milestone.)
+   inspecting a string before it is decoded, is defeated by `....//` (which collapses back
+   into `../` after one strip) and by percent-encoded `%2e%2e%2f` (only decoded *after* the
+   check). Shown against the vulnerable app's deliberately broken "hardened" endpoint.
 3. **Addressing by opaque id removes the class entirely** — if no user-supplied path
    component ever participates in locating a file, there is nothing to traverse. The
    secure app already exposes this via `GET /documents/{document_id}`.
@@ -139,6 +140,39 @@ curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
 docker compose down --volumes
 ```
 
+## The vulnerable read contrast (opt-in)
+
+The vulnerable app demonstrates what the secure app refuses. Starting it takes **two
+deliberate actions** — enabling the `vulnerable` Compose profile **and** setting
+`ALLOW_VULNERABLE_DEMO=true` (the app refuses to boot without the acknowledgement). Its
+container is hardened (non-root, all capabilities dropped, `no-new-privileges`, read-only
+root filesystem) and has **no network egress** beyond its loopback-published port.
+
+Run the side-by-side comparison (vulnerable vs secure, over real HTTP):
+
+```sh
+ALLOW_VULNERABLE_DEMO=true docker compose --profile vulnerable run --rm compare
+docker compose --profile vulnerable down --volumes
+```
+
+The comparison walks the traversal ladder against both apps:
+
+| Rung | Vulnerable app | Secure app |
+|---|---|---|
+| `../northwind-mills/statement-2026-07.txt` | another tenant's statement | generic `404` |
+| `../../config/integration.key` | the integration key + `DEMO_SENTINEL` | generic `404` |
+| `/etc/passwd` | the container's own `/etc/passwd` | generic `404` |
+| `vault-link` (planted symlink) | out-of-root content | generic `404` |
+| `....//....//config/integration.key` (hardened) | bypassed → integration key | generic `404` |
+| `%2e%2e%2f…config%2fintegration.key` (hardened) | bypassed → integration key | generic `404` |
+
+…and confirms the two apps return **identical** output for benign requests. For manual
+exploration the vulnerable API is available on `127.0.0.1:8001`:
+
+```sh
+ALLOW_VULNERABLE_DEMO=true docker compose --profile vulnerable up vulnerable
+```
+
 ## Expected outcomes
 
 - The legitimate reads, import, and summary succeed and return only the caller's own data.
@@ -150,18 +184,21 @@ docker compose down --volumes
 
 ```text
 src/boundless/
-  config.py      identity.py     fixtures.py    safepath.py   <- resolve-and-confine
-  archive.py     catalog.py      audit.py       samples.py
-  scenario.py    cli.py          secure/app.py  <- the secure FastAPI application
-tests/           Dockerfile      docker-compose.yml           .github/workflows/ci.yml
+  config.py      identity.py     fixtures.py     safepath.py    <- resolve-and-confine
+  archive.py     catalog.py      audit.py        samples.py     webcommon.py
+  scenario.py    comparison.py   cli.py
+  secure/app.py       <- the secure FastAPI application
+  vulnerable/app.py   <- the intentionally vulnerable app (opt-in, read direction)
+tests/           Dockerfile      docker-compose.yml            .github/workflows/ci.yml
 ```
 
 ## Safety boundary
 
-The demonstration is wholly synthetic and local. It executes **no command**. In this
-milestone it introduces **no vulnerable code path** at all. When later milestones add the
-vulnerable contrast, starting it will require two deliberate actions, its container will be
-hardened (non-root, all capabilities dropped, `no-new-privileges`, read-only root
-filesystem, no network egress), and every write it performs will be confined to two
-documented targets inside the disposable in-container fixture tree. Execution-reaching
-write targets are out of scope by design.
+The demonstration is wholly synthetic and local. It executes **no command**. The
+vulnerable app introduced here is **read-only** in effect — it discloses files but writes,
+deletes, and mutates nothing — and starting it requires two deliberate actions. Its
+container is hardened (non-root, all capabilities dropped, `no-new-privileges`, read-only
+root filesystem) with **no network egress** beyond its loopback port. The Zip-Slip
+**write** contrast arrives in a later milestone; every write it performs will be confined
+to two documented targets inside the disposable in-container fixture tree, and
+execution-reaching write targets are out of scope by design.

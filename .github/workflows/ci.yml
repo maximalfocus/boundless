@@ -20,6 +20,9 @@ jobs:
       - name: Run the one-shot secure demo over real HTTP
         run: docker compose run --rm demo
 
+      - name: Run the vulnerable-vs-secure read comparison (opt-in)
+        run: ALLOW_VULNERABLE_DEMO=true docker compose --profile vulnerable run --rm compare
+
       - name: Tear down
         if: always()
-        run: docker compose down --volumes --remove-orphans
+        run: docker compose --profile vulnerable down --volumes --remove-orphans
